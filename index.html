@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <title>QR File Transfer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body { font-family: Arial, sans-serif; background:#0f172a; color:#e5e7eb; margin:0; }
+    header { padding:16px; background:#020617; display:flex; gap:12px; }
+    button { padding:10px 16px; border:none; border-radius:8px; cursor:pointer; }
+    .primary { background:#2563eb; color:white; }
+    .secondary { background:#334155; color:white; }
+    .panel { padding:20px; display:none; }
+    .panel.active { display:block; }
+    .box { background:#020617; padding:16px; border-radius:12px; margin-bottom:16px; }
+    #qrCanvas { width:300px; height:300px; background:white; }
+    video { width:100%; max-width:420px; border-radius:12px; background:black; }
+    select, input { padding:8px; border-radius:8px; border:none; }
+    .countdown { font-size:32px; font-weight:bold; }
+  </style>
+</head>
+<body>
+
+<header>
+  <button class="primary" onclick="showPanel('send')">Send</button>
+  <button class="secondary" onclick="showPanel('receive')">Receive</button>
+</header>
+
+<!-- SEND PANEL -->
+<div id="send" class="panel active">
+  <div class="box">
+    <h2>Send File (QR Continuous)</h2>
+    <input type="file" id="fileInput" />
+    <p>Countdown:</p>
+    <div class="countdown" id="countdown">-</div>
+    <canvas id="qrCanvas"></canvas>
+    <p id="sendStatus"></p>
+  </div>
+</div>
+
+<!-- RECEIVE PANEL -->
+<div id="receive" class="panel">
+  <div class="box">
+    <h2>Receive File</h2>
+    <label>Kamera:</label>
+    <select id="cameraSelect"></select><br><br>
+    <video id="video" autoplay playsinline></video>
+    <canvas id="scanCanvas" hidden></canvas>
+    <p id="recvStatus">Menunggu QR...</p>
+  </div>
+</div>
+
+<audio id="ding" src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA="></audio>
+
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+
+<script>
+/* ================= COMMON ================= */
+function showPanel(id) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+/* ================= SEND ================= */
+const CHUNK_SIZE = 1800; // bytes before Base64
+let sendChunks = [];
+let sendIndex = 0;
+let sendTimer = null;
+
+fileInput.onchange = async () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+
+  sendChunks = [];
+  for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+    const chunk = bytes.slice(i, i + CHUNK_SIZE);
+    const b64 = btoa(String.fromCharCode(...chunk));
+    sendChunks.push(b64);
+  }
+
+  sendIndex = 0;
+  startCountdown();
+};
+
+function startCountdown() {
+  let c = 5;
+  countdown.textContent = c;
+  const t = setInterval(() => {
+    c--;
+    countdown.textContent = c;
+    if (c === 0) {
+      clearInterval(t);
+      startSending();
+    }
+  }, 1000);
+}
+
+function startSending() {
+  sendStatus.textContent = 'Mengirim data...';
+  sendTimer = setInterval(() => {
+    if (sendIndex >= sendChunks.length) {
+      clearInterval(sendTimer);
+      sendStatus.textContent = 'Transfer selesai.';
+      return;
+    }
+
+    const payload = JSON.stringify({
+      i: sendIndex,
+      t: sendChunks.length,
+      d: sendChunks[sendIndex]
+    });
+
+    QRCode.toCanvas(qrCanvas, payload, { errorCorrectionLevel: 'L' });
+    sendIndex++;
+  }, 120); // interval super cepat
+}
+
+/* ================= RECEIVE ================= */
+const video = document.getElementById('video');
+const scanCanvas = document.getElementById('scanCanvas');
+const ctx = scanCanvas.getContext('2d');
+let recvChunks = [];
+let totalChunks = null;
+
+async function listCameras() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  cameraSelect.innerHTML = '';
+  devices.filter(d => d.kind === 'videoinput').forEach((cam, i) => {
+    const opt = document.createElement('option');
+    opt.value = cam.deviceId;
+    opt.text = cam.label || `Camera ${i+1}`;
+    cameraSelect.appendChild(opt);
+  });
+}
+
+cameraSelect.onchange = startCamera;
+
+async function startCamera() {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { deviceId: cameraSelect.value }
+  });
+  video.srcObject = stream;
+}
+
+function scanLoop() {
+  if (video.readyState === video.HAVE_ENOUGH_DATA) {
+    scanCanvas.width = video.videoWidth;
+    scanCanvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0);
+    const img = ctx.getImageData(0, 0, scanCanvas.width, scanCanvas.height);
+    const code = jsQR(img.data, img.width, img.height);
+
+    if (code) {
+      try {
+        const obj = JSON.parse(code.data);
+        if (!recvChunks[obj.i]) {
+          recvChunks[obj.i] = obj.d;
+          totalChunks = obj.t;
+          recvStatus.textContent = `Menerima ${recvChunks.filter(Boolean).length}/${totalChunks}`;
+        }
+      } catch {}
+    }
+
+    if (totalChunks && recvChunks.filter(Boolean).length === totalChunks) {
+      finishReceive();
+      return;
+    }
+  }
+  requestAnimationFrame(scanLoop);
+}
+
+function finishReceive() {
+  const bytes = [];
+  recvChunks.forEach(b64 => {
+    const bin = atob(b64);
+    for (let i = 0; i < bin.length; i++) bytes.push(bin.charCodeAt(i));
+  });
+
+  const blob = new Blob([new Uint8Array(bytes)]);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'received_file';
+  a.click();
+
+  ding.play();
+  recvStatus.textContent = 'Transfer selesai!';
+}
+
+listCameras().then(startCamera).then(scanLoop);
+</script>
+
+</body>
+</html>
