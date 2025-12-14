@@ -2,7 +2,7 @@
 <html lang="id">
 <head>
   <meta charset="UTF-8" />
-  <title>QR File Transfer</title>
+  <title>QR File Transfer (Continuous)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     body { font-family: Arial, sans-serif; background:#0f172a; color:#e5e7eb; margin:0; }
@@ -12,11 +12,14 @@
     .secondary { background:#334155; color:white; }
     .panel { padding:20px; display:none; }
     .panel.active { display:block; }
-    .box { background:#020617; padding:16px; border-radius:12px; margin-bottom:16px; }
-    #qrCanvas { width:300px; height:300px; background:white; }
+    .box { background:#020617; padding:16px; border-radius:12px; margin-bottom:16px; max-width:520px; }
+    #qrBox { width:300px; height:300px; background:white; display:flex; align-items:center; justify-content:center; }
     video { width:100%; max-width:420px; border-radius:12px; background:black; }
     select, input { padding:8px; border-radius:8px; border:none; }
     .countdown { font-size:32px; font-weight:bold; }
+    .progress { width:100%; height:14px; background:#1e293b; border-radius:8px; overflow:hidden; }
+    .progress > div { height:100%; width:0%; background:#22c55e; transition:width 0.1s linear; }
+    .small { font-size:12px; opacity:0.8; }
   </style>
 </head>
 <body>
@@ -33,8 +36,9 @@
     <input type="file" id="fileInput" />
     <p>Countdown:</p>
     <div class="countdown" id="countdown">-</div>
-    <canvas id="qrCanvas"></canvas>
-    <p id="sendStatus"></p>
+    <div id="qrBox"></div>
+    <div class="progress"><div id="sendBar"></div></div>
+    <p class="small" id="sendStatus">Idle</p>
   </div>
 </div>
 
@@ -46,13 +50,15 @@
     <select id="cameraSelect"></select><br><br>
     <video id="video" autoplay playsinline></video>
     <canvas id="scanCanvas" hidden></canvas>
-    <p id="recvStatus">Menunggu QR...</p>
+    <div class="progress"><div id="recvBar"></div></div>
+    <p class="small" id="recvStatus">Menunggu QR...</p>
   </div>
 </div>
 
 <audio id="ding" src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA="></audio>
 
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+<!-- QR GENERATOR & SCANNER -->
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 
 <script>
@@ -62,11 +68,22 @@ function showPanel(id) {
   document.getElementById(id).classList.add('active');
 }
 
+/* ================= UTIL ================= */
+function uint8ToBase64(u8) {
+  let binary = '';
+  const step = 0x8000;
+  for (let i = 0; i < u8.length; i += step) {
+    binary += String.fromCharCode.apply(null, u8.subarray(i, i + step));
+  }
+  return btoa(binary);
+}
+
 /* ================= SEND ================= */
-const CHUNK_SIZE = 1800; // bytes before Base64
+const CHUNK_SIZE = 1800;
 let sendChunks = [];
 let sendIndex = 0;
 let sendTimer = null;
+let qr = null;
 
 fileInput.onchange = async () => {
   const file = fileInput.files[0];
@@ -78,11 +95,11 @@ fileInput.onchange = async () => {
   sendChunks = [];
   for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
     const chunk = bytes.slice(i, i + CHUNK_SIZE);
-    const b64 = btoa(String.fromCharCode(...chunk));
-    sendChunks.push(b64);
+    sendChunks.push(uint8ToBase64(chunk));
   }
 
   sendIndex = 0;
+  sendBar.style.width = '0%';
   startCountdown();
 };
 
@@ -101,22 +118,24 @@ function startCountdown() {
 
 function startSending() {
   sendStatus.textContent = 'Mengirim data...';
+  qrBox.innerHTML = '';
+  qr = new QRCode(qrBox, { width:300, height:300, correctLevel: QRCode.CorrectLevel.L });
+
   sendTimer = setInterval(() => {
     if (sendIndex >= sendChunks.length) {
       clearInterval(sendTimer);
-      sendStatus.textContent = 'Transfer selesai.';
+      sendStatus.textContent = 'Transfer selesai';
+      sendBar.style.width = '100%';
       return;
     }
 
-    const payload = JSON.stringify({
-      i: sendIndex,
-      t: sendChunks.length,
-      d: sendChunks[sendIndex]
-    });
+    const payload = JSON.stringify({ i: sendIndex, t: sendChunks.length, d: sendChunks[sendIndex] });
+    qr.clear();
+    qr.makeCode(payload);
 
-    QRCode.toCanvas(qrCanvas, payload, { errorCorrectionLevel: 'L' });
     sendIndex++;
-  }, 120); // interval super cepat
+    sendBar.style.width = Math.floor((sendIndex / sendChunks.length) * 100) + '%';
+  }, 250);
 }
 
 /* ================= RECEIVE ================= */
@@ -140,9 +159,7 @@ async function listCameras() {
 cameraSelect.onchange = startCamera;
 
 async function startCamera() {
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: { deviceId: cameraSelect.value }
-  });
+  const stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: cameraSelect.value } });
   video.srcObject = stream;
 }
 
@@ -160,7 +177,9 @@ function scanLoop() {
         if (!recvChunks[obj.i]) {
           recvChunks[obj.i] = obj.d;
           totalChunks = obj.t;
-          recvStatus.textContent = `Menerima ${recvChunks.filter(Boolean).length}/${totalChunks}`;
+          const got = recvChunks.filter(Boolean).length;
+          recvBar.style.width = Math.floor((got / totalChunks) * 100) + '%';
+          recvStatus.textContent = `Menerima ${got}/${totalChunks}`;
         }
       } catch {}
     }
