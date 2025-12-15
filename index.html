@@ -1,233 +1,154 @@
-<!-- 0.0.4 !-->
+<!-- V.0.1 !-->
 <!DOCTYPE html>
 <html lang="id">
 <head>
-  <meta charset="UTF-8" />
-  <title>QR File Transfer (Continuous) 0.0.4</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <style>
-    body { font-family: Arial, sans-serif; background:#0f172a; color:#e5e7eb; margin:0; }
-    header { padding:16px; background:#020617; display:flex; gap:12px; }
-    button { padding:10px 16px; border:none; border-radius:8px; cursor:pointer; }
-    .primary { background:#2563eb; color:white; }
-    .secondary { background:#334155; color:white; }
-    .panel { padding:20px; display:none; }
-    .panel.active { display:block; }
-    .box { background:#020617; padding:16px; border-radius:12px; margin-bottom:16px; max-width:520px; }
-    #qrBox { width:300px; height:300px; background:white; display:flex; align-items:center; justify-content:center; }
-    video { width:100%; max-width:420px; border-radius:12px; background:black; }
-    select, input { padding:8px; border-radius:8px; border:none; }
-    .countdown { font-size:32px; font-weight:bold; }
-    .progress { width:100%; height:14px; background:#1e293b; border-radius:8px; overflow:hidden; }
-    .progress > div { height:100%; width:0%; background:#22c55e; transition:width 0.1s linear; }
-    .small { font-size:12px; opacity:0.8; }
-  </style>
+<meta charset="UTF-8" />
+<title>VLC Black White Transfer v0.1.1</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<style>
+body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#020617;color:#e5e7eb}
+header{position:fixed;top:0;left:0;right:0;z-index:10;background:#020617;padding:12px;display:flex;gap:10px}
+button{padding:10px 16px;border:none;border-radius:10px;cursor:pointer;font-size:14px}
+.primary{background:#2563eb;color:#fff}
+.secondary{background:#334155;color:#fff}
+.panel{display:none;padding-top:80px;text-align:center}
+.panel.active{display:block}
+#txScreen{width:100vw;height:100vh;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:bold}
+video{width:92%;max-width:420px;border-radius:14px;background:#000}
+canvas{display:none}
+.info{font-size:13px;opacity:.85;margin-top:8px}
+</style>
 </head>
 <body>
-
 <header>
-  <button class="primary" onclick="showPanel('send')">Send</button>
-  <button class="secondary" onclick="showPanel('receive')">Receive</button>
+  <button class="primary" onclick="show('send')">Sender</button>
+  <button class="secondary" onclick="show('recv')">Receiver</button>
 </header>
 
-<!-- SEND PANEL -->
+<!-- SENDER -->
 <div id="send" class="panel active">
-  <div class="box">
-    <h2>Send File (QR Continuous)</h2>
-    <input type="file" id="fileInput" />
-    <p>Countdown:</p>
-    <div class="countdown" id="countdown">-</div>
-    <div id="qrBox"></div>
-    <div class="progress"><div id="sendBar"></div></div>
-    <p class="small" id="sendStatus">Idle</p>
-  </div>
+  <input type="file" id="fileInput" />
+  <div class="info">VLC Hitam/Putih • Manchester Encoding • Auto</div>
+  <div id="txScreen">READY</div>
 </div>
 
-<!-- RECEIVE PANEL -->
-<div id="receive" class="panel">
-  <div class="box">
-    <h2>Receive File</h2>
-    <label>Kamera:</label>
-    <select id="cameraSelect"></select><br><br>
-    <video id="video" autoplay playsinline></video>
-    <canvas id="scanCanvas" hidden></canvas>
-    <div class="progress"><div id="recvBar"></div></div>
-    <p class="small" id="recvStatus">Menunggu QR...</p>
-  </div>
+<!-- RECEIVER -->
+<div id="recv" class="panel">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="canvas"></canvas>
+  <div class="info" id="status">Menunggu kamera...</div>
 </div>
-
-<audio id="ding" src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA="></audio>
-
-<!-- QR GENERATOR & SCANNER -->
-<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 
 <script>
-/* ================= COMMON ================= */
-function showPanel(id) {
-  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  document.getElementById(id).classList.add('active');
-}
+function show(id){document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));document.getElementById(id).classList.add('active')}
 
-/* ================= UTIL ================= */
-function uint8ToBase64(u8) {
-  let binary = '';
-  const step = 0x8000;
-  for (let i = 0; i < u8.length; i += step) {
-    binary += String.fromCharCode.apply(null, u8.subarray(i, i + step));
-  }
-  return btoa(binary);
-}
-
-/* ================= SEND ================= */
-const CHUNK_SIZE = 1800;
-let sendChunks = [];
-let sendIndex = 0;
-let sendTimer = null;
-let qr = null;
+/* ================= SENDER ================= */
+const txScreen = document.getElementById('txScreen');
+let txBits = [], txIndex = 0, txTimer = null;
+const BIT_TIME = 100; // ms (aman PC & Android)
 
 fileInput.onchange = async () => {
-  const file = fileInput.files[0];
-  if (!file) return;
+  const f = fileInput.files[0]; if(!f) return;
+  const bytes = new Uint8Array(await f.arrayBuffer());
+  txBits = [];
 
-  const buffer = await file.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
+  // PREAMBLE 10101010
+  for(let i=0;i<8;i++) txBits.push(i%2);
 
-  sendChunks = [];
-  for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
-    const chunk = bytes.slice(i, i + CHUNK_SIZE);
-    sendChunks.push(uint8ToBase64(chunk));
-  }
+  // DATA (Manchester encoded)
+  bytes.forEach(b=>{
+    for(let i=7;i>=0;i--){
+      const bit = (b>>i)&1;
+      // Manchester: 1 -> 10, 0 -> 01
+      if(bit){ txBits.push(1,0); } else { txBits.push(0,1); }
+    }
+  });
 
-  sendIndex = 0;
-  sendBar.style.width = '0%';
-  startCountdown();
+  // END MARK 00000000
+  for(let i=0;i<8;i++) txBits.push(0);
+
+  txIndex = 0;
+  startTx();
 };
 
-function startCountdown() {
-  let c = 5;
-  countdown.textContent = c;
-  const t = setInterval(() => {
-    c--;
-    countdown.textContent = c;
-    if (c === 0) {
-      clearInterval(t);
-      startSending();
-    }
-  }, 1000);
+function startTx(){
+  clearInterval(txTimer);
+  txTimer = setInterval(()=>{
+    const bit = txBits[txIndex];
+    txScreen.style.background = bit ? '#ffffff' : '#000000';
+    txScreen.style.color = bit ? '#000' : '#000';
+    txScreen.textContent = bit ? '1' : '0';
+    txIndex++;
+    if(txIndex >= txBits.length){ clearInterval(txTimer); txScreen.textContent='DONE'; }
+  }, BIT_TIME);
 }
 
-function startSending() {
-  sendStatus.textContent = 'Mengirim data...';
-  qrBox.innerHTML = '';
-  qr = new QRCode(qrBox, { width:300, height:300, correctLevel: QRCode.CorrectLevel.L });
-
-  sendTimer = setInterval(() => {
-    if (sendIndex >= sendChunks.length) {
-      clearInterval(sendTimer);
-      sendStatus.textContent = 'Transfer selesai';
-      sendBar.style.width = '100%';
-      return;
-    }
-
-    const payload = JSON.stringify({ i: sendIndex, t: sendChunks.length, d: sendChunks[sendIndex] });
-    qr.clear();
-    qr.makeCode(payload);
-
-    sendIndex++;
-    sendBar.style.width = Math.floor((sendIndex / sendChunks.length) * 100) + '%';
-  }, 250);
-}
-
-/* ================= RECEIVE ================= */
+/* ================= RECEIVER ================= */
 const video = document.getElementById('video');
-const scanCanvas = document.getElementById('scanCanvas');
-const ctx = scanCanvas.getContext('2d');
-let recvChunks = [];
-let totalChunks = null;
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
 
-async function listCameras() {
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  cameraSelect.innerHTML = '';
-  devices.filter(d => d.kind === 'videoinput').forEach((cam, i) => {
-    const opt = document.createElement('option');
-    opt.value = cam.deviceId;
-    opt.text = cam.label || `Camera ${i+1}`;
-    cameraSelect.appendChild(opt);
-  });
-}
+let rxBits = [], rxBytes = [], syncBuf = '';
+let receiving = false, manchesterBuf = '';
 
-cameraSelect.onchange = startCamera;
-
-async function startCamera() {
-  if (video.srcObject) {
-    video.srcObject.getTracks().forEach(t => t.stop());
-  }
-
-  const constraints = {
-    video: cameraSelect.value
-      ? { deviceId: { exact: cameraSelect.value } }
-      : { facingMode: 'environment' }
-  };
-
-  const stream = await navigator.mediaDevices.getUserMedia(constraints);
+async function startCam(){
+  const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'} }, audio:false });
   video.srcObject = stream;
   await video.play();
+  statusEl.textContent = 'Arahkan kamera ke layar sender';
+  requestAnimationFrame(rxLoop);
 }
 
-function scanLoop() {
-  if (video.readyState === video.HAVE_ENOUGH_DATA) {
-    scanCanvas.width = video.videoWidth;
-    scanCanvas.height = video.videoHeight;
+function rxLoop(){
+  if(video.readyState === video.HAVE_ENOUGH_DATA){
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video,0,0);
 
-    ctx.drawImage(video, 0, 0, scanCanvas.width, scanCanvas.height);
-    const img = ctx.getImageData(0, 0, scanCanvas.width, scanCanvas.height);
+    const p = ctx.getImageData(canvas.width/2, canvas.height/2, 1, 1).data;
+    const bit = (p[0] + p[1] + p[2]) > 380 ? 1 : 0;
 
-    const code = jsQR(img.data, img.width, img.height, {
-      inversionAttempts: 'attemptBoth'
-    });
+    if(!receiving){
+      syncBuf += bit;
+      if(syncBuf.endsWith('10101010')){
+        receiving = true;
+        rxBits = [];
+        rxBytes = [];
+        manchesterBuf = '';
+        statusEl.textContent = 'SYNC diterima';
+      }
+      if(syncBuf.length > 8) syncBuf = syncBuf.slice(-8);
+    } else {
+      manchesterBuf += bit;
+      if(manchesterBuf.length === 2){
+        if(manchesterBuf === '10') rxBits.push(1);
+        else if(manchesterBuf === '01') rxBits.push(0);
+        manchesterBuf = '';
 
-    if (code && code.data) {
-      try {
-        const obj = JSON.parse(code.data);
-        if (!recvChunks[obj.i]) {
-          recvChunks[obj.i] = obj.d;
-          totalChunks = obj.t;
-
-          const got = recvChunks.filter(Boolean).length;
-          recvBar.style.width = Math.floor((got / totalChunks) * 100) + '%';
-          recvStatus.textContent = `Menerima ${got}/${totalChunks}`;
+        if(rxBits.length === 8){
+          const byte = rxBits.reduce((a,b)=> (a<<1)|b, 0);
+          if(byte === 0){ finish(); receiving = false; }
+          else rxBytes.push(byte);
+          rxBits = [];
+          statusEl.textContent = 'Byte diterima: ' + rxBytes.length;
         }
-      } catch (e) {}
-    }
-
-    if (totalChunks && recvChunks.filter(Boolean).length === totalChunks) {
-      finishReceive();
-      return;
+      }
     }
   }
-  requestAnimationFrame(scanLoop);
+  requestAnimationFrame(rxLoop);
 }
 
-function finishReceive() {
-  const bytes = [];
-  recvChunks.forEach(b64 => {
-    const bin = atob(b64);
-    for (let i = 0; i < bin.length; i++) bytes.push(bin.charCodeAt(i));
-  });
-
-  const blob = new Blob([new Uint8Array(bytes)]);
+function finish(){
+  const blob = new Blob([new Uint8Array(rxBytes)]);
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'received_file';
+  a.download = 'received.bin';
   a.click();
-
-  ding.play();
-  recvStatus.textContent = 'Transfer selesai!';
+  statusEl.textContent = 'Transfer selesai';
 }
 
-listCameras().then(startCamera).then(scanLoop);
+setTimeout(startCam, 600);
 </script>
-
 </body>
 </html>
