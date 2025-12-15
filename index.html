@@ -1,4 +1,4 @@
-<!-- V.0.1 !-->
+<!-- V.0.0.2 !-->
 <!DOCTYPE html>
 <html lang="id">
 <head>
@@ -45,7 +45,7 @@ function show(id){document.querySelectorAll('.panel').forEach(p=>p.classList.rem
 /* ================= SENDER ================= */
 const txScreen = document.getElementById('txScreen');
 let txBits = [], txIndex = 0, txTimer = null;
-const BIT_TIME = 100; // ms (aman PC & Android)
+const BIT_TIME = 300; // diperlambat agar kamera sempat menangkap perubahan // ms (aman PC & Android)
 
 fileInput.onchange = async () => {
   const f = fileInput.files[0]; if(!f) return;
@@ -107,7 +107,9 @@ function rxLoop(){
     ctx.drawImage(video,0,0);
 
     const p = ctx.getImageData(canvas.width/2, canvas.height/2, 1, 1).data;
-    const bit = (p[0] + p[1] + p[2]) > 380 ? 1 : 0;
+    // threshold diturunkan & distabilkan
+    const luminance = (p[0] + p[1] + p[2]) / 3;
+    const bit = luminance > 140 ? 1 : 0;
 
     if(!receiving){
       syncBuf += bit;
