@@ -1,9 +1,9 @@
-<!-- 0.0.6 !-->
+<!-- 0.0.7 !-->
 <!DOCTYPE html>
 <html lang="id">
 <head>
   <meta charset="UTF-8" />
-  <title>QR File Transfer v0.0.6 (ZXing WASM)</title>
+  <title>QR File Transfer v0.0.7 (Stable & Scannable)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     body{font-family:Arial;background:#0f172a;color:#e5e7eb;margin:0}
@@ -13,12 +13,11 @@
     .secondary{background:#334155;color:#fff}
     .panel{padding:20px;display:none}
     .panel.active{display:block}
-    .box{background:#020617;padding:16px;border-radius:12px;margin-bottom:16px;max-width:520px}
-    #qrBox{width:320px;height:320px;background:#fff;display:flex;align-items:center;justify-content:center}
+    .box{background:#020617;padding:16px;border-radius:12px;margin-bottom:16px;max-width:560px}
+    #qrBox{width:512px;height:512px;background:#fff;margin:auto}
     video{width:100%;max-width:420px;border-radius:12px;background:#000}
-    select,input{padding:8px;border-radius:8px;border:none}
-    .progress{width:100%;height:14px;background:#1e293b;border-radius:8px;overflow:hidden}
-    .progress>div{height:100%;width:0%;background:#22c55e;transition:width .1s linear}
+    .progress{width:100%;height:14px;background:#1e293b;border-radius:8px;overflow:hidden;margin-top:10px}
+    .progress>div{height:100%;width:0%;background:#22c55e}
     .small{font-size:12px;opacity:.8}
   </style>
 </head>
@@ -30,8 +29,9 @@
 
 <div id="send" class="panel active">
   <div class="box">
-    <h2>Send (QR Continuous)</h2>
+    <h2>Send (Step QR – Stable)</h2>
     <input type="file" id="fileInput" />
+    <p class="small">Tap layar / tombol untuk QR berikutnya</p>
     <div id="qrBox"></div>
     <div class="progress"><div id="sendBar"></div></div>
     <p class="small" id="sendStatus">Idle</p>
@@ -40,7 +40,7 @@
 
 <div id="receive" class="panel">
   <div class="box">
-    <h2>Receive (ZXing) — v0.0.6</h2>
+    <h2>Receive (ZXing – Stable)</h2>
     <video id="video" autoplay playsinline muted></video>
     <canvas id="canvas" hidden></canvas>
     <div class="progress"><div id="recvBar"></div></div>
@@ -57,68 +57,86 @@
 function showPanel(id){document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));document.getElementById(id).classList.add('active')}
 
 /* SEND */
-const CHUNK=700;let chunks=[],idx=0,qr;
-fileInput.onchange=async()=>{
-  const f=fileInput.files[0];if(!f)return;
-  const b=new Uint8Array(await f.arrayBuffer());chunks=[];
-  for(let i=0;i<b.length;i+=CHUNK){chunks.push(btoa(String.fromCharCode(...b.slice(i,i+CHUNK))))}
-  idx=0;qrBox.innerHTML='';qr=new QRCode(qrBox,{width:320,height:320});
-  const timer=setInterval(()=>{
-    if(idx>=chunks.length){clearInterval(timer);sendStatus.textContent='Selesai';sendBar.style.width='100%';return}
-    const payload=JSON.stringify({i:idx,t:chunks.length,d:chunks[idx]});
-    qr.clear();qr.makeCode(payload);
-    idx++;sendBar.style.width=Math.floor(idx/chunks.length*100)+'%'
-  },600);
+const CHUNK = 350;
+let frames = [], frameIndex = 0, qr;
+
+fileInput.onchange = async () => {
+  const f = fileInput.files[0]; if(!f) return;
+  const b = new Uint8Array(await f.arrayBuffer()); frames = [];
+
+  // META FRAME
+  frames.push(JSON.stringify({type:'meta',name:f.name,size:b.length}));
+
+  // DATA FRAMES
+  for(let i=0;i<b.length;i+=CHUNK){
+    const slice = b.slice(i,i+CHUNK);
+    frames.push(JSON.stringify({type:'data',i:i/CHUNK,d:btoa(String.fromCharCode(...slice))}));
+  }
+
+  // END FRAME
+  frames.push(JSON.stringify({type:'end'}));
+
+  frameIndex = 0;
+  qrBox.innerHTML='';
+  qr = new QRCode(qrBox, { width:512, height:512, correctLevel: QRCode.CorrectLevel.Q });
+  renderFrame();
+};
+
+function renderFrame(){
+  qr.clear();
+  qr.makeCode(frames[frameIndex]);
+  sendStatus.textContent = `Frame ${frameIndex+1}/${frames.length}`;
+  sendBar.style.width = Math.floor((frameIndex+1)/frames.length*100)+'%';
 }
 
-/* RECEIVE ZXing */
-const video=document.getElementById('video');
-const canvas=document.getElementById('canvas');
-const ctx=canvas.getContext('2d');
-const reader=new ZXing.BrowserQRCodeReader();
-let recv=[],total=null;
+qrBox.onclick = () => {
+  if(frameIndex < frames.length-1){ frameIndex++; renderFrame(); }
+};
+
+/* RECEIVE */
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const reader = new ZXing.BrowserQRCodeReader();
+
+let recv = [], expectedSize = 0, fileName = 'received_file';
 
 async function startCamera(){
-  if(video.srcObject){video.srcObject.getTracks().forEach(t=>t.stop())}
-  const stream=await navigator.mediaDevices.getUserMedia({
-    video:{
-      facingMode:{exact:'environment'},
-      width:{ideal:1280},
-      height:{ideal:720}
-    }
-  })
-  video.setAttribute('playsinline','true')
-  video.muted=trues
-  video.srcObject=stream
-  await video.play()
+  const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{exact:'environment'} } });
+  video.srcObject = stream; await video.play();
 }
 
-
 function scan(){
-  if(video.readyState===video.HAVE_ENOUGH_DATA){
-    canvas.width=video.videoWidth;canvas.height=video.videoHeight;
+  if(video.readyState === video.HAVE_ENOUGH_DATA){
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
     ctx.drawImage(video,0,0);
-    reader.decodeFromCanvas(canvas).then(r=>{
-      const o=JSON.parse(r.text);
-      if(!recv[o.i]){recv[o.i]=o.d;total=o.t;
-        const got=recv.filter(Boolean).length;
-        recvBar.style.width=Math.floor(got/total*100)+'%';
-        recvStatus.textContent=`Menerima ${got}/${total}`}
-      if(total&&recv.filter(Boolean).length===total)finish();
+    reader.decodeFromCanvas(canvas).then(r => {
+      const o = JSON.parse(r.text);
+      if(o.type === 'meta'){
+        expectedSize = o.size; fileName = o.name;
+        recvStatus.textContent = 'META diterima';
+      }
+      if(o.type === 'data' && recv[o.i] === undefined){
+        recv[o.i] = o.d;
+        const got = recv.filter(Boolean).length;
+        recvBar.style.width = Math.floor(got/(expectedSize/CHUNK)*100)+'%';
+        recvStatus.textContent = `Menerima ${got}`;
+      }
+      if(o.type === 'end') finish();
     }).catch(()=>{});
   }
-  requestAnimationFrame(scan)
+  requestAnimationFrame(scan);
 }
 
 function finish(){
-  const arr=[];recv.forEach(b=>{const s=atob(b);for(let i=0;i<s.length;i++)arr.push(s.charCodeAt(i))});
-  const blob=new Blob([new Uint8Array(arr)]);
-  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='received_file';a.click();
-  ding.play();recvStatus.textContent='Selesai';
+  const bytes = [];
+  recv.forEach(b64 => { const s = atob(b64); for(let i=0;i<s.length;i++) bytes.push(s.charCodeAt(i)); });
+  const blob = new Blob([new Uint8Array(bytes)]);
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fileName; a.click();
+  ding.play(); recvStatus.textContent = 'Selesai';
 }
 
-// user gesture required
-document.body.addEventListener('click',async()=>{await startCamera();scan()},{once:true});
+document.body.addEventListener('click', async () => { await startCamera(); scan(); }, { once:true });
 </script>
 </body>
 </html>
